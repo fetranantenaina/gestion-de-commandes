@@ -1,20 +1,19 @@
+# Les valeurs viennent du fichier .env (voir .env.example) : rien n'est écrit en dur ici.
 services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_USER: orders
-      POSTGRES_PASSWORD: orders
-      POSTGRES_DB: orders
+      POSTGRES_USER: ${POSTGRES_USER:?Définir POSTGRES_USER dans .env (voir .env.example)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env (voir .env.example)}
+      POSTGRES_DB: ${POSTGRES_DB:?Définir POSTGRES_DB dans .env (voir .env.example)}
     ports:
-      # Port de la MACHINE (défaut 5432), modifiable : DB_PORT=5433 docker compose up
-      - "${DB_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"   # port de la machine : modifiable dans .env
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Exécutés dans l'ordre alphabétique, uniquement à la PREMIÈRE création du volume
-      - ./db/create-test-db.sql:/docker-entrypoint-initdb.d/01-create-test-db.sql:ro
-      - ./db/script.sql:/docker-entrypoint-initdb.d/02-script.sql:ro
+      # Exécuté uniquement à la PREMIÈRE création du volume
+      - ./db/script.sql:/docker-entrypoint-initdb.d/01-script.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 3s
       timeout: 3s
       retries: 15
@@ -22,10 +21,14 @@ services:
   app:
     build: .
     environment:
-      # Entre conteneurs, PostgreSQL écoute sur son port interne 5432
-      DATABASE_URL: postgresql+psycopg://orders:orders@db:5432/orders
+      POSTGRES_USER: ${POSTGRES_USER:?Définir POSTGRES_USER dans .env (voir .env.example)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env (voir .env.example)}
+      POSTGRES_DB: ${POSTGRES_DB:?Définir POSTGRES_DB dans .env (voir .env.example)}
+      # Entre conteneurs : nom du service et port INTERNE de PostgreSQL
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
     ports:
-      - "8000:8000"
+      - "${APP_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy

@@ -2,8 +2,32 @@
 
 Petite application web pour consulter des produits, créer des commandes et suivre leur statut.
 
-**Stack** : Python 3.12 · FastAPI · SQLAlchemy 2 · PostgreSQL 16 (port **5432**) · HTML/JS natif · pytest
+**Stack** : Python 3.12 · FastAPI · SQLAlchemy 2 · PostgreSQL 16 · HTML/JS natif · pytest
 **Architecture** : hexagonale (ports & adaptateurs) + Domain-Driven Design
+
+## Configuration : fichier `.env`
+
+Tous les identifiants et ports sont dans un fichier **`.env`** (jamais versionné). Au premier usage :
+
+```powershell
+Copy-Item .env.example .env      # Linux/macOS : cp .env.example .env
+```
+
+puis éditer `.env` (au minimum `POSTGRES_PASSWORD`).
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Identifiants et base PostgreSQL | *(obligatoire)* |
+| `POSTGRES_TEST_DB` | Base des tests d'intégration (créée automatiquement) | `orders_test` |
+| `POSTGRES_HOST` | Hôte PostgreSQL vu depuis votre machine | `localhost` |
+| `POSTGRES_PORT` | Port PostgreSQL exposé sur votre machine | `5432` |
+| `APP_PORT` | Port de l'application exposé sur votre machine | `8000` |
+
+Docker Compose lit ce même fichier : aucun mot de passe n'est écrit dans `docker-compose.yml` ni dans le code.
+Dans Docker, l'application joint la base via `db:5432` (réglé automatiquement, indépendamment de `POSTGRES_PORT`).
+
+> Le mot de passe n'est appliqué qu'à la **création** du volume de la base. Pour le changer après un premier lancement :
+> `docker compose down -v` puis relancer.
 
 ## Lancer l'application
 
@@ -14,28 +38,23 @@ docker compose up --build
 ```
 
 - Application : <http://localhost:8000> (API interactive : <http://localhost:8000/docs>)
-- PostgreSQL : `localhost:5432` — utilisateur `orders`, mot de passe `orders`, base `orders`
+- PostgreSQL : `localhost:5432` avec les identifiants du `.env`
 
 Au premier démarrage, PostgreSQL exécute automatiquement `db/script.sql` (schéma + jeu de données).
 Pour repartir de zéro : `docker compose down -v && docker compose up --build`.
 
-**Erreur « port 5432 is not available » ?** Un autre programme utilise déjà ce port (souvent un PostgreSQL installé
-sur la machine, ou un ancien conteneur). Soit on l'arrête, soit on change le port de la machine :
-
-```bash
-# PowerShell
-$env:DB_PORT=5433; docker compose up --build
-```
-
-L'application dans Docker n'est pas affectée (elle joint la base en interne). Seuls `psql` et les tests d'intégration
-doivent alors viser le nouveau port (`TEST_DATABASE_URL=...@localhost:5433/orders_test`).
+**Erreur « port is not available » ?** Un autre programme utilise déjà ce port (souvent un PostgreSQL installé sur la
+machine). Changer `POSTGRES_PORT` (ou `APP_PORT`) dans `.env`, par exemple `POSTGRES_PORT=5433`.
+L'application dans Docker n'est pas affectée ; seuls `psql` et les tests lisent ce port.
 
 ### Option 2 — En local (Python + base dans Docker)
 
 Prérequis : Python 3.11+ et Docker. Seule la base tourne dans Docker ; `db/script.sql` s'y exécute automatiquement.
+Aucune base à créer à la main.
 
 **Windows (PowerShell)**
 ```powershell
+Copy-Item .env.example .env       # puis éditer .env
 docker compose up -d db
 
 python -m venv .venv
@@ -47,6 +66,7 @@ uvicorn app.main:app --reload
 
 **Linux / macOS**
 ```bash
+cp .env.example .env              # puis éditer .env
 docker compose up -d db
 
 python -m venv .venv && source .venv/bin/activate
@@ -55,11 +75,10 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Avec un PostgreSQL déjà installé (sans Docker) : créer l'utilisateur `orders` / mot de passe `orders` et la base `orders`,
-puis exécuter le script : `psql -h localhost -p 5432 -U orders -d orders -f db/script.sql`
-(PowerShell : définir d'abord `$env:PGPASSWORD="orders"`).
-
-La connexion se règle avec `DATABASE_URL` (défaut : `postgresql+psycopg://orders:orders@localhost:5432/orders`).
+Avec un PostgreSQL déjà installé (sans Docker) : créer l'utilisateur et la base correspondant au `.env`, renseigner
+`POSTGRES_HOST` / `POSTGRES_PORT`, puis exécuter le script :
+`psql -h localhost -p 5432 -U <user> -d <base> -f db/script.sql`
+(PowerShell : définir d'abord `$env:PGPASSWORD="<mot de passe>"`).
 
 ## Base de données : `db/script.sql`
 
@@ -79,14 +98,14 @@ pytest
 |---|---|---|---|
 | Domaine | `tests/domain` | aucune | règles métier pures (objets-valeurs, agrégats, services) |
 | Cas d'usage | `tests/application` | aucune (faux en mémoire) | orchestration, atomicité, erreurs |
-| Intégration | `tests/integration` | PostgreSQL :5432 | API HTTP complète, `script.sql`, contraintes SQL, **concurrence** |
+| Intégration | `tests/integration` | PostgreSQL + `.env` | API HTTP complète, `script.sql`, contraintes SQL, **concurrence** |
 
-Les tests unitaires s'exécutent en quelques millisecondes sans base. Les tests d'intégration utilisent la base
-`orders_test` (créée par `docker-compose` via `db/create-test-db.sql`) et se **sautent proprement** si PostgreSQL
-est injoignable. Variable : `TEST_DATABASE_URL`.
+Les tests unitaires s'exécutent en quelques millisecondes sans base ni `.env`. Les tests d'intégration lisent le
+`.env`, utilisent la base `POSTGRES_TEST_DB` (créée automatiquement si elle n'existe pas) et se **sautent
+proprement** si PostgreSQL est injoignable.
 
 > ⚠️ Les tables de la base de test sont supprimées puis recréées depuis `script.sql` avant chaque test.
-> Ne jamais y pointer la base `orders`.
+> `POSTGRES_TEST_DB` doit être différente de `POSTGRES_DB` (les tests refusent de démarrer sinon).
 
 Les 6 cas de l'énoncé sont dans `tests/integration/test_api.py` (et leur équivalent métier dans `tests/domain`).
 
@@ -132,10 +151,10 @@ app/
   adapters/
     inbound/http/            Routes FastAPI, DTO Pydantic, traduction erreurs -> codes HTTP
     outbound/persistence/    Tables ORM, repositories, Unit of Work PostgreSQL
-  config.py   main.py        Configuration et racine de composition
+  config.py                  Lecture du .env, construction de l'URL de connexion
+  main.py                    Racine de composition
 db/
   script.sql                 Schéma + données
-  create-test-db.sql         Base de test
 ```
 
 ### Concepts DDD utilisés
@@ -211,6 +230,10 @@ L'API renvoie les montants en chaînes (`"204.30"`) pour ne perdre aucune préci
 qu'à lire/écrire. Les tests d'intégration rejouent ce script, donc il est lui-même vérifié.
 
 **Pas de migrations.** Suffisant pour une v1 ; en production j'ajouterais Alembic.
+
+**Secrets.** Identifiants dans `.env` (ignoré par git), modèle fourni dans `.env.example`. L'URL de connexion est
+construite par `sqlalchemy.engine.URL.create`, qui échappe les caractères spéciaux du mot de passe. L'application
+refuse de démarrer avec un message explicite si une variable obligatoire manque.
 
 ## Pistes d'amélioration
 

@@ -8,8 +8,8 @@ def order(*lines):
     return {"items": [{"product_id": pid, "quantity": qty} for pid, qty in lines]}
 
 
-def test_script_sql_is_idempotent(sql, client):
-    from tests.integration.conftest import SCRIPT_SQL, engine
+def test_script_sql_is_idempotent(engine, client):
+    from tests.integration.conftest import SCRIPT_SQL
 
     with engine.begin() as conn:
         conn.exec_driver_sql(SCRIPT_SQL.read_text(encoding="utf-8"))  # 2e exécution
