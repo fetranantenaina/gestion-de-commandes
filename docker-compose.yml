@@ -6,7 +6,8 @@ services:
       POSTGRES_PASSWORD: orders
       POSTGRES_DB: orders
     ports:
-      - "5433:5432"   # PostgreSQL exposé sur le port 5433 de la machine
+      # Port de la MACHINE (défaut 5433), modifiable : DB_PORT=5434 docker compose up
+      - "${DB_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Exécutés dans l'ordre alphabétique, uniquement à la PREMIÈRE création du volume

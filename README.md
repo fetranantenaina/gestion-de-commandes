@@ -19,6 +19,17 @@ docker compose up --build
 Au premier démarrage, PostgreSQL exécute automatiquement `db/script.sql` (schéma + jeu de données).
 Pour repartir de zéro : `docker compose down -v && docker compose up --build`.
 
+**Erreur « port 5433 is not available » ?** Un autre programme utilise déjà ce port (souvent un PostgreSQL installé
+sur la machine, ou un ancien conteneur). Soit on l'arrête, soit on change le port de la machine :
+
+```bash
+# PowerShell
+$env:DB_PORT=5434; docker compose up --build
+```
+
+L'application dans Docker n'est pas affectée (elle joint la base en interne). Seuls `psql` et les tests d'intégration
+doivent alors viser le nouveau port (`TEST_DATABASE_URL=...@localhost:5434/orders_test`).
+
 ### Option 2 — En local
 
 Prérequis : Python 3.11+ et un PostgreSQL qui écoute sur le **port 5433** (par ex. `docker compose up -d db`).
