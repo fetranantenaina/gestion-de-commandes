@@ -2,7 +2,8 @@
 
 Petite application web pour consulter des produits, créer des commandes et suivre leur statut.
 
-**Stack** : Python 3.12 · FastAPI · SQLAlchemy 2 · PostgreSQL 16 · HTML/JS natif (sans build) · pytest
+**Stack** : Python 3.12 · FastAPI · SQLAlchemy 2 · PostgreSQL 16 (port **5433**) · HTML/JS natif · pytest
+**Architecture** : hexagonale (ports & adaptateurs) + Domain-Driven Design
 
 ## Lancer l'application
 
@@ -12,55 +13,115 @@ Petite application web pour consulter des produits, créer des commandes et suiv
 docker compose up --build
 ```
 
-Puis ouvrir <http://localhost:8000>. La base est créée et le jeu de données initial chargé automatiquement.
-Documentation interactive de l'API : <http://localhost:8000/docs>.
+- Application : <http://localhost:8000> (API interactive : <http://localhost:8000/docs>)
+- PostgreSQL : `localhost:5433` — utilisateur `orders`, mot de passe `orders`, base `orders`
+
+Au premier démarrage, PostgreSQL exécute automatiquement `db/script.sql` (schéma + jeu de données).
+Pour repartir de zéro : `docker compose down -v && docker compose up --build`.
 
 ### Option 2 — En local
 
-Prérequis : Python 3.11+ et un PostgreSQL accessible.
+Prérequis : Python 3.11+ et un PostgreSQL qui écoute sur le **port 5433** (par ex. `docker compose up -d db`).
 
 ```bash
-# 1. Base de données (ou : docker compose up -d db)
-createdb orders        # utilisateur orders / mot de passe orders par défaut
-
-# 2. Dépendances
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Configuration (optionnelle, la valeur ci-dessous est celle par défaut)
-export DATABASE_URL=postgresql+psycopg://orders:orders@localhost:5432/orders
+# Schéma + données (idempotent, rejouable sans risque)
+PGPASSWORD=orders psql -h localhost -p 5433 -U orders -d orders -f db/script.sql
 
-# 4. Tables + jeu de données initial (idempotent)
-python -m app.seed
-
-# 5. Démarrage
 uvicorn app.main:app --reload
 ```
 
-## Jeu de données initial
+La connexion se règle avec `DATABASE_URL` (défaut : `postgresql+psycopg://orders:orders@localhost:5433/orders`).
 
-`app/seed.py` insère 8 produits. Deux servent aux cas limites :
-- **Clé USB 64 Go** : stock de 3 (tester « stock insuffisant »)
-- **Tapis de souris** : stock de 0 (rupture)
+## Base de données : `db/script.sql`
+
+Le script contient **le schéma** (tables, clés, contraintes `CHECK`, index) **et le jeu de données initial**.
+Il est idempotent : `CREATE ... IF NOT EXISTS`, et les produits ne sont insérés que si la table est vide.
+
+Produits de test : 8 produits dont **Clé USB 64 Go** (stock 3 → tester le stock insuffisant) et
+**Tapis de souris** (stock 0 → rupture).
 
 ## Tests
 
 ```bash
-pytest                      # SQLite, aucune installation requise (17 tests)
+pytest
 ```
 
-Sur PostgreSQL (recommandé : active en plus les 2 tests de concurrence) :
+| Niveau | Dossier | Dépendances | Ce qui est vérifié |
+|---|---|---|---|
+| Domaine | `tests/domain` | aucune | règles métier pures (objets-valeurs, agrégats, services) |
+| Cas d'usage | `tests/application` | aucune (faux en mémoire) | orchestration, atomicité, erreurs |
+| Intégration | `tests/integration` | PostgreSQL :5433 | API HTTP complète, `script.sql`, contraintes SQL, **concurrence** |
 
-```bash
-createdb orders_test
-TEST_DATABASE_URL=postgresql+psycopg://orders:orders@localhost:5432/orders_test pytest
+Les tests unitaires s'exécutent en quelques millisecondes sans base. Les tests d'intégration utilisent la base
+`orders_test` (créée par `docker-compose` via `db/create-test-db.sql`) et se **sautent proprement** si PostgreSQL
+est injoignable. Variable : `TEST_DATABASE_URL`.
+
+> ⚠️ Les tables de la base de test sont supprimées puis recréées depuis `script.sql` avant chaque test.
+> Ne jamais y pointer la base `orders`.
+
+Les 6 cas de l'énoncé sont dans `tests/integration/test_api.py` (et leur équivalent métier dans `tests/domain`).
+
+## Architecture
+
+```
+          ┌───────────────────────────────────────────────────────┐
+ HTTP ──▶ │ adapters/inbound/http      (FastAPI : routes, DTO)    │
+          └───────────────┬───────────────────────────────────────┘
+                          ▼ appelle
+          ┌───────────────────────────────────────────────────────┐
+          │ application/                                          │
+          │   use_cases/   CreateOrder, CancelOrder, ValidateOrder│
+          │   ports.py     ProductRepository, OrderRepository,    │
+          │                UnitOfWork  (interfaces)               │
+          └───────────────┬───────────────────────────────────────┘
+                          ▼ utilise
+          ┌───────────────────────────────────────────────────────┐
+          │ domain/   Product, Order, Money, Quantity, services   │
+          │           ← Python pur, aucune dépendance             │
+          └───────────────────────────────────────────────────────┘
+                          ▲ implémente les ports
+          ┌───────────────┴───────────────────────────────────────┐
+          │ adapters/outbound/persistence  (SQLAlchemy/PostgreSQL)│
+          └───────────────────────────────────────────────────────┘
 ```
 
-> ⚠️ Les tables de `TEST_DATABASE_URL` sont supprimées à chaque test : utiliser une base dédiée, jamais `orders`.
+**Règle de dépendance : tout pointe vers le domaine.** `domain/` n'importe rien d'externe, `application/`
+n'importe que `domain/`. Les adaptateurs (HTTP, PostgreSQL) dépendent de l'application, jamais l'inverse.
+`app/main.py` est la *racine de composition* : le seul fichier qui connaît toutes les couches et les assemble.
 
-Les 6 cas demandés par l'énoncé sont couverts dans `tests/test_orders.py` (commande valide multi-produits,
-stock insuffisant, quantité ≤ 0, produit inexistant, annulation + restitution, double annulation), plus :
-atomicité, lignes en double, changement de prix après commande, transitions de statut.
+```
+app/
+  domain/                    LE MÉTIER
+    value_objects.py         Money (Decimal, centimes), Quantity (entier > 0)
+    product.py               Agrégat Product : reserve(), restock(), stock jamais négatif
+    order.py                 Agrégat Order : validate(), cancel(), statuts, total
+    services.py              place_order(), cancel_order() : règles multi-agrégats
+    errors.py                Erreurs métier (sans notion de HTTP)
+  application/
+    ports.py                 Interfaces attendues de l'extérieur (repositories, Unit of Work)
+    use_cases/               Un fichier par cas d'usage (+ queries.py pour la lecture)
+  adapters/
+    inbound/http/            Routes FastAPI, DTO Pydantic, traduction erreurs -> codes HTTP
+    outbound/persistence/    Tables ORM, repositories, Unit of Work PostgreSQL
+  config.py   main.py        Configuration et racine de composition
+db/
+  script.sql                 Schéma + données
+  create-test-db.sql         Base de test
+```
+
+### Concepts DDD utilisés
+
+| Concept | Où | Rôle |
+|---|---|---|
+| **Objet-valeur** | `Money`, `Quantity` | Immuables, valident leurs invariants à la construction : une `Quantity` de 0 ne peut pas exister |
+| **Agrégat / racine** | `Order` (avec ses `OrderLine`), `Product` | Unité de cohérence ; seule la racine modifie son état |
+| **Service de domaine** | `place_order`, `cancel_order` | Règle qui touche plusieurs agrégats (commande + produits) |
+| **Repository** | `ProductRepository`, `OrderRepository` | Collection d'agrégats ; le domaine ignore SQL |
+| **Unit of Work** | `UnitOfWork` | Une transaction : tout est validé ensemble ou rien |
+| **Erreurs métier** | `domain/errors.py` | Langage du domaine (`InsufficientStock`…), traduites en HTTP par l'adaptateur |
 
 ## API
 
@@ -73,73 +134,62 @@ atomicité, lignes en double, changement de prix après commande, transitions de
 | POST | `/api/orders/{id}/validate` | En attente → Validée |
 | POST | `/api/orders/{id}/cancel` | Annule et restitue le stock |
 
-| Situation | Code HTTP | `error.code` |
+Erreurs : `{"error": {"code", "message", "details"}}`
+
+| Situation | HTTP | `error.code` |
 |---|---|---|
-| Quantité ≤ 0, liste vide, JSON invalide | 422 | (validation Pydantic) |
-| Produit inexistant / commande inexistante | 404 | `product_not_found` / `order_not_found` |
-| Stock insuffisant | 409 | `insufficient_stock` (détail : demandé vs disponible par produit) |
+| Quantité ≤ 0 | 422 | `invalid_quantity` |
+| Commande sans ligne | 422 | `empty_order` |
+| Produit / commande inexistant(e) | 404 | `product_not_found` / `order_not_found` |
+| Stock insuffisant | 409 | `insufficient_stock` (demandé vs disponible par produit) |
 | Commande déjà annulée | 409 | `order_already_cancelled` |
 | Validation d'une commande non « en attente » | 409 | `invalid_status_transition` |
-
-## Organisation du code
-
-```
-app/
-  models.py          Tables SQLAlchemy + contraintes CHECK
-  schemas.py         Validation des entrées / forme des sorties (Pydantic)
-  exceptions.py      Erreurs métier -> codes HTTP
-  services/orders.py LOGIQUE MÉTIER (aucune dépendance à HTTP)
-  routers/           Routes fines : parsent la requête, appellent le service
-  main.py            Assemblage + gestionnaire d'erreurs
-  seed.py            Jeu de données
-  static/index.html  Interface
-tests/               Tests d'API (pytest + TestClient) et de concurrence
-```
-
-La logique métier est isolée dans `services/` : les routes ne contiennent aucune règle, ce qui garde le code
-lisible et testable.
+| JSON mal formé (type erroné, champ manquant) | 422 | format Pydantic standard (`detail`) |
 
 ## Choix techniques et hypothèses
 
-**Cycle de vie des statuts.** L'énoncé demande de mettre à jour le stock « après validation de la commande »
-et de restituer le stock à l'annulation. J'ai interprété ainsi :
-- à la création, toutes les vérifications sont faites, puis la commande est enregistrée au statut **En attente**
-  et le **stock est immédiatement réservé** (sinon deux clients pourraient commander le dernier article) ;
-- `validate` fait passer **En attente → Validée** (le stock est déjà réservé, il ne bouge pas) ;
-- `cancel` est possible depuis **En attente** ou **Validée** et restitue le stock ; depuis **Annulée**, c'est refusé.
+**Cycle de vie des statuts.** L'énoncé demande de mettre à jour le stock « après validation de la commande » et de
+le restituer à l'annulation. Interprétation retenue :
+- à la création, les vérifications sont faites puis la commande est enregistrée **En attente** et le **stock est
+  immédiatement réservé** (sinon deux clients pourraient commander le dernier article) ;
+- `validate` : **En attente → Validée** (le stock est déjà réservé) ;
+- `cancel` : possible depuis **En attente** ou **Validée**, restitue le stock ; refusé si déjà **Annulée**.
 
-Si la règle voulue était « le stock ne baisse qu'à la validation », il suffirait de déplacer la décrémentation
-de `create_order` vers `validate_order` ; en revanche il faudrait alors revérifier le stock à ce moment-là.
+Si la règle voulue était « le stock ne baisse qu'à la validation », il suffirait de déplacer la réservation de
+`place_order` vers un service de validation (en revérifiant le stock à ce moment-là).
 
-**Atomicité.** Création et annulation s'exécutent dans une seule transaction. Toutes les vérifications précèdent
-la première écriture, et un `rollback` explicite couvre les erreurs inattendues : une commande refusée ne laisse
-aucune trace, et les stocks ne sont jamais modifiés.
+**Où vit chaque règle.** Les règles métier sont dans le domaine, pas dans les routes ni en base : `Quantity`
+refuse 0 et les négatifs, `Product` refuse un stock négatif, `Order.cancel()` refuse une seconde annulation.
+Pydantic ne valide que la *forme* du JSON. Résultat : les mêmes règles s'appliquent quel que soit le point d'entrée
+(HTTP, CLI, file de messages…) et se testent sans base ni serveur.
 
-**Concurrence.** Les produits concernés sont verrouillés avec `SELECT ... FOR UPDATE`, toujours dans l'ordre
-croissant des identifiants (évite les deadlocks). Deux commandes simultanées sur le dernier article : l'une
-passe, l'autre reçoit un 409 (testé avec 6 threads). L'annulation verrouille aussi la commande, donc deux
-annulations simultanées ne restituent le stock qu'une fois.
+**Atomicité.** Chaque cas d'usage ouvre une transaction (Unit of Work). Les services de domaine vérifient *tout*
+avant de modifier quoi que ce soit ; en cas d'erreur, la transaction est annulée : aucune commande, aucun stock modifié.
 
-**Lignes en double.** Si un produit apparaît plusieurs fois dans une commande, les quantités sont additionnées
-avant la vérification du stock (sinon 2 lignes de 3 passeraient chacune un stock de 5) puis fusionnées en une ligne.
+**Concurrence.** Les produits (et la commande, pour l'annulation) sont verrouillés avec `SELECT ... FOR UPDATE`,
+toujours dans l'ordre croissant des ids (pas de deadlock). Deux commandes simultanées sur le dernier article :
+l'une passe, l'autre reçoit 409 ; deux annulations simultanées ne restituent le stock qu'une fois (testé avec
+des threads sur PostgreSQL réel).
 
-**Intégrité en profondeur.** Contraintes `CHECK` en base (`stock >= 0`, `quantity > 0`, `unit_price >= 0`) :
-même un bug applicatif ne pourrait pas créer un stock négatif.
+**Lignes en double.** Un produit présent sur plusieurs lignes est cumulé avant la vérification du stock, puis fusionné.
 
-**Argent.** `NUMERIC(10,2)` en base et `Decimal` en Python, jamais de `float`. L'API renvoie les montants
-sous forme de chaînes (`"204.30"`) pour éviter toute perte de précision côté client.
+**Défense en profondeur.** Contraintes `CHECK` dans `script.sql` (`stock >= 0`, `quantity > 0`, statuts valides) :
+même un bug applicatif ne pourrait pas corrompre les données (testé).
 
-**Historique figé.** Le nom et le prix unitaire sont copiés dans chaque ligne de commande : modifier un produit
-plus tard ne change ni le total ni le contenu des commandes passées.
+**Argent.** `NUMERIC` en base, `Decimal` en Python via `Money` (arrondi au centime), jamais de `float`.
+L'API renvoie les montants en chaînes (`"204.30"`) pour ne perdre aucune précision côté client.
 
-**Validation à deux niveaux.** Pydantic rejette les entrées mal formées (422) ; le service vérifie ce qui dépend
-des données (existence, stock).
+**Historique figé.** Nom et prix du produit sont copiés dans chaque ligne de commande.
 
-**Pas de migrations.** `create_all` suffit pour une v1. Pour la production, j'ajouterais Alembic.
+**Schéma en SQL plutôt qu'ORM.** `script.sql` est la source de vérité du schéma ; les classes SQLAlchemy ne servent
+qu'à lire/écrire. Les tests d'intégration rejouent ce script, donc il est lui-même vérifié.
+
+**Pas de migrations.** Suffisant pour une v1 ; en production j'ajouterais Alembic.
 
 ## Pistes d'amélioration
 
 - Migrations Alembic, authentification, pagination de `/api/orders`
 - CRUD produits (hors périmètre de l'énoncé)
-- Clé d'idempotence sur `POST /api/orders` pour éviter les doublons en cas de double clic / retry réseau
-- CI (GitHub Actions) avec service PostgreSQL
+- Clé d'idempotence sur `POST /api/orders` (double clic, retry réseau)
+- Événements de domaine (`OrderPlaced`, `OrderCancelled`) si d'autres traitements doivent réagir
+- CI (GitHub Actions) avec un service PostgreSQL

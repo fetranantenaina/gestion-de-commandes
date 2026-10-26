@@ -1,31 +1,20 @@
-from pathlib import Path
+"""Racine de composition : le SEUL endroit qui connaît toutes les couches et les assemble.
 
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+    PostgreSQL ──▶ SqlAlchemyUnitOfWork ──▶ cas d'usage ──▶ API HTTP
 
-from app.exceptions import DomainError
-from app.routers import orders, products
+Lancement : uvicorn app.main:app
+"""
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-STATIC_DIR = Path(__file__).parent / "static"
+from app.adapters.inbound.http.app import create_app
+from app.adapters.outbound.persistence.unit_of_work import SqlAlchemyUnitOfWork
+from app.application.use_cases import build_use_cases
+from app.config import DATABASE_URL
 
-app = FastAPI(title="Gestion de commandes")
-app.include_router(products.router)
-app.include_router(orders.router)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# expire_on_commit=False : les objets restent lisibles après le commit
+session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
-
-@app.exception_handler(DomainError)
-async def domain_error_handler(_: Request, exc: DomainError):
-    """Format d'erreur uniforme : {"error": {"code", "message", "details"}}."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": {"code": exc.code, "message": exc.message, "details": exc.details}},
-    )
-
-
-@app.get("/", include_in_schema=False)
-def index():
-    return FileResponse(STATIC_DIR / "index.html")
-
-
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+use_cases = build_use_cases(lambda: SqlAlchemyUnitOfWork(session_factory))
+app = create_app(use_cases)

@@ -6,9 +6,12 @@ services:
       POSTGRES_PASSWORD: orders
       POSTGRES_DB: orders
     ports:
-      - "5432:5432"
+      - "5433:5432"   # PostgreSQL exposé sur le port 5433 de la machine
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Exécutés dans l'ordre alphabétique, uniquement à la PREMIÈRE création du volume
+      - ./db/create-test-db.sql:/docker-entrypoint-initdb.d/01-create-test-db.sql:ro
+      - ./db/script.sql:/docker-entrypoint-initdb.d/02-script.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
       interval: 3s
@@ -18,6 +21,7 @@ services:
   app:
     build: .
     environment:
+      # Entre conteneurs, PostgreSQL écoute sur son port interne 5432
       DATABASE_URL: postgresql+psycopg://orders:orders@db:5432/orders
     ports:
       - "8000:8000"
