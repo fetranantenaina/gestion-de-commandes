@@ -1,6 +1,6 @@
 """Fixtures d'intégration : un VRAI PostgreSQL, initialisé avec db/script.sql.
 
-Par défaut : postgresql://orders:orders@localhost:5433/orders_test
+Par défaut : postgresql://orders:orders@localhost:5432/orders_test
 (base créée par docker-compose via db/create-test-db.sql).
 
 ATTENTION : les tables de cette base sont supprimées et recréées avant CHAQUE test.
@@ -20,7 +20,7 @@ from app.adapters.outbound.persistence.unit_of_work import SqlAlchemyUnitOfWork
 from app.application.use_cases import build_use_cases
 
 TEST_DATABASE_URL = os.getenv(
-    "TEST_DATABASE_URL", "postgresql+psycopg://orders:orders@localhost:5433/orders_test"
+    "TEST_DATABASE_URL", "postgresql+psycopg://orders:orders@localhost:5432/orders_test"
 )
 SCRIPT_SQL = Path(__file__).parents[2] / "db" / "script.sql"
 

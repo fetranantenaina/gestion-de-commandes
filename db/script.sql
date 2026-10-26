@@ -3,7 +3,7 @@
 --
 -- Idempotent : peut être rejoué sans erreur ni doublon.
 --   * Docker : exécuté automatiquement au premier démarrage du conteneur db
---   * Manuel : psql -h localhost -p 5433 -U orders -d orders -f db/script.sql
+--   * Manuel : psql -h localhost -p 5432 -U orders -d orders -f db/script.sql
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
