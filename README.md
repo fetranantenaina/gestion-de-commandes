@@ -30,19 +30,34 @@ $env:DB_PORT=5433; docker compose up --build
 L'application dans Docker n'est pas affectée (elle joint la base en interne). Seuls `psql` et les tests d'intégration
 doivent alors viser le nouveau port (`TEST_DATABASE_URL=...@localhost:5433/orders_test`).
 
-### Option 2 — En local
+### Option 2 — En local (Python + base dans Docker)
 
-Prérequis : Python 3.11+ et un PostgreSQL qui écoute sur le **port 5432** (par ex. `docker compose up -d db`).
+Prérequis : Python 3.11+ et Docker. Seule la base tourne dans Docker ; `db/script.sql` s'y exécute automatiquement.
 
-```bash
-python -m venv .venv && source .venv/bin/activate
+**Windows (PowerShell)**
+```powershell
+docker compose up -d db
+
+python -m venv .venv
+.venv\Scripts\Activate.ps1      # si refusé : Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 pip install -r requirements.txt
-
-# Schéma + données (idempotent, rejouable sans risque)
-PGPASSWORD=orders psql -h localhost -p 5432 -U orders -d orders -f db/script.sql
 
 uvicorn app.main:app --reload
 ```
+
+**Linux / macOS**
+```bash
+docker compose up -d db
+
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+uvicorn app.main:app --reload
+```
+
+Avec un PostgreSQL déjà installé (sans Docker) : créer l'utilisateur `orders` / mot de passe `orders` et la base `orders`,
+puis exécuter le script : `psql -h localhost -p 5432 -U orders -d orders -f db/script.sql`
+(PowerShell : définir d'abord `$env:PGPASSWORD="orders"`).
 
 La connexion se règle avec `DATABASE_URL` (défaut : `postgresql+psycopg://orders:orders@localhost:5432/orders`).
 
